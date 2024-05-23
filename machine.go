@@ -9,6 +9,7 @@ type MachineContext[S, T any] struct {
 	Services       S
 	PreviousResult *StepResponse[S, T]
 	State          T
+	Machine        *Machine[S, T]
 }
 
 type MachineConfig[S, T any] struct {
@@ -33,13 +34,15 @@ func NewMachine[S, T any](
 	initialContext *MachineContext[S, T],
 	config *MachineConfig[S, T],
 ) *Machine[S, T] {
-	return &Machine[S, T]{
+	m := &Machine[S, T]{
 		Name:           name,
 		Steps:          steps,
 		InitialContext: initialContext,
 		Context:        initialContext,
 		Config:         config,
 	}
+	m.Context.Machine = m
+	return m
 }
 
 func (m *Machine[S, T]) AddStep(step Step[S, T]) {
