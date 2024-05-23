@@ -2,89 +2,83 @@ package tango
 
 import (
 	"fmt"
+	"sync"
 )
 
-type MachineContext struct {
-	Services       any
-	PreviousResult *StepResponse
-	State          any
+type MachineContext[S, T any] struct {
+	Services       S
+	PreviousResult *StepResponse[S, T]
+	State          T
 }
 
-type MachineConfig struct {
+type MachineConfig[S, T any] struct {
 	Log      bool
 	LogLevel string
+	Plugins  []Plugin[S, T]
 }
 
-type Machine struct {
+type Machine[S, T any] struct {
 	Name           string
-	Context        *MachineContext
-	Steps          []Step
-	ExecutedSteps  []Step
-	InitialContext *MachineContext
-	Config         *MachineConfig
+	Context        *MachineContext[S, T]
+	Steps          []Step[S, T]
+	ExecutedSteps  []Step[S, T]
+	InitialContext *MachineContext[S, T]
+	Config         *MachineConfig[S, T]
+	mu             sync.Mutex
 }
 
-func NewMachine(name string, steps []Step, initialContext *MachineContext, config *MachineConfig) *Machine {
-	return &Machine{Name: name, Steps: steps, InitialContext: initialContext, Context: initialContext, Config: config}
+func NewMachine[S, T any](
+	name string,
+	steps []Step[S, T],
+	initialContext *MachineContext[S, T],
+	config *MachineConfig[S, T],
+) *Machine[S, T] {
+	return &Machine[S, T]{
+		Name:           name,
+		Steps:          steps,
+		InitialContext: initialContext,
+		Context:        initialContext,
+		Config:         config,
+	}
 }
 
-func (m *Machine) AddStep(step Step) {
+func (m *Machine[S, T]) AddStep(step Step[S, T]) {
 	m.Steps = append(m.Steps, step)
 }
 
-func (m *Machine) Reset() {
+func (m *Machine[S, T]) Reset() {
 	m.Steps = nil
 	m.Context = m.InitialContext
 	m.ExecutedSteps = nil
 }
 
-func (m *Machine) Run() (*StepResponse, error) {
-	if m.Steps == nil || len(m.Steps) == 0 {
+func (m *Machine[S, T]) Run() (*StepResponse[S, T], error) {
+	if len(m.Steps) == 0 {
 		return nil, fmt.Errorf("no steps to execute")
 	}
 
-	i := 0
-	for i < len(m.Steps) {
+	for i := 0; i < len(m.Steps); i++ {
 		step := m.Steps[i]
-		if m.Config.Log {
-			fmt.Printf("Executing step: %s\n", step.Name)
-		}
 
-		if step.BeforeExecute != nil {
-			if err := step.BeforeExecute(m.Context); err != nil {
-				return nil, err
-			}
-		}
-
-		if step.Execute == nil {
-			return nil, fmt.Errorf("step %s has no Execute function", step.Name)
-		}
-		response, err := step.Execute(m.Context)
+		response, err := m.executeStep(step)
 		if err != nil {
 			return nil, err
 		}
 
-		if step.AfterExecute != nil {
-			if err := step.AfterExecute(m.Context); err != nil {
-				return nil, err
-			}
-		}
-
+		m.mu.Lock()
 		m.ExecutedSteps = append(m.ExecutedSteps, step)
-		if m.Config.Log {
-			fmt.Printf("Step result for %s: %s\n", step.Name, response.Status)
-		}
+		m.Context.PreviousResult = response
+		m.mu.Unlock()
 
 		switch response.Status {
 		case NEXT:
-			m.Context.PreviousResult = response
-			i++
+			continue
 		case DONE:
 			return response, nil
 		case ERROR:
 			return nil, fmt.Errorf("execution error at %s", step.Name)
 		case SKIP:
-			i += response.SkipCount + 1
+			i += response.SkipCount
 		case JUMP:
 			targetIndex := -1
 			for index, s := range m.Steps {
@@ -94,17 +88,53 @@ func (m *Machine) Run() (*StepResponse, error) {
 				}
 			}
 			if targetIndex >= 0 {
-				i = targetIndex
+				i = targetIndex - 1
 			} else {
 				return nil, fmt.Errorf("jump target '%s' not found at %s", response.JumpTarget, step.Name)
 			}
 		}
 	}
 
+	for _, plugin := range m.Config.Plugins {
+		if err := plugin.Cleanup(m.Context); err != nil {
+			return nil, fmt.Errorf("plugin cleanup error: %v", err)
+		}
+	}
+
 	return nil, nil
 }
 
-func (m *Machine) Compensate() (*StepResponse, error) {
+func (m *Machine[S, T]) executeStep(step Step[S, T]) (*StepResponse[S, T], error) {
+
+	if m.Config.Log {
+		fmt.Printf("Executing step: %s\n", step.Name)
+	}
+
+	if step.BeforeExecute != nil {
+		if err := step.BeforeExecute(m.Context); err != nil {
+			return nil, err
+		}
+	}
+
+	if step.Execute == nil {
+		return nil, fmt.Errorf("step %s has no Execute function", step.Name)
+	}
+
+	response, err := step.Execute(m.Context)
+	if err != nil {
+		return nil, err
+	}
+
+	if step.AfterExecute != nil {
+		if err := step.AfterExecute(m.Context); err != nil {
+			return nil, err
+		}
+	}
+
+	return response, nil
+}
+
+func (m *Machine[S, T]) Compensate() (*StepResponse[S, T], error) {
 	m.Context = m.InitialContext
 	for i := len(m.ExecutedSteps) - 1; i >= 0; i-- {
 		step := m.ExecutedSteps[i]
@@ -128,26 +158,28 @@ func (m *Machine) Compensate() (*StepResponse, error) {
 	return nil, nil
 }
 
-func (m *Machine) NewStep(step *Step) *Step {
+type Result interface{}
+
+func (m *Machine[S, T]) NewStep(step *Step[S, T]) *Step[S, T] {
 	return NewStep(step)
 }
 
-func (m *Machine) Next(result any) *StepResponse {
-	return Next(result)
+func (m *Machine[S, T]) Next(result Result) *StepResponse[S, T] {
+	return Next[Result, S, T](result)
 }
 
-func (m *Machine) Done(result any) *StepResponse {
-	return Done(result)
+func (m *Machine[S, T]) Done(result Result) *StepResponse[S, T] {
+	return Done[Result, S, T](result)
 }
 
-func (m *Machine) Error(result any) *StepResponse {
-	return Error(result)
+func (m *Machine[S, T]) Error(result Result) *StepResponse[S, T] {
+	return Error[Result, S, T](result)
 }
 
-func (m *Machine) Skip(result any, count int) *StepResponse {
-	return Skip(result, count)
+func (m *Machine[S, T]) Skip(result Result, count int) *StepResponse[S, T] {
+	return Skip[Result, S, T](result, count)
 }
 
-func (m *Machine) Jump(result any, target string) *StepResponse {
-	return Jump(result, target)
+func (m *Machine[S, T]) Jump(result any, target string) *StepResponse[S, T] {
+	return Jump[Result, S, T](result, target)
 }
