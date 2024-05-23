@@ -15,296 +15,461 @@ type State struct {
 	Counter int
 }
 
+type testCase struct {
+	name              string
+	steps             []tango.Step[Services, State]
+	expectedResult    string
+	expectedError     error
+	expectedStepNames []string
+}
+
 func TestMachine_Run(t *testing.T) {
-	// Create a new machine
-	m := tango.NewMachine("TestMachine", []tango.Step[Services, State]{}, &tango.MachineContext[Services, State]{}, &tango.MachineConfig[Services, State]{
-		Log: false,
-	})
-
-	// Add some steps to the machine
-	step1 := m.NewStep(&tango.Step[Services, State]{
-		Name: "Step1",
-		Execute: func(ctx *tango.MachineContext[Services, State]) (*tango.StepResponse[Services, State], error) {
-			return m.Next("Next"), nil
+	tests := []testCase{
+		{
+			name: "SimpleRun",
+			steps: []tango.Step[Services, State]{
+				{
+					Name: "Step1",
+					Execute: func(ctx *tango.MachineContext[Services, State]) (*tango.StepResponse[Services, State], error) {
+						return ctx.Machine.Next("Next"), nil
+					},
+				},
+				{
+					Name: "Step2",
+					Execute: func(ctx *tango.MachineContext[Services, State]) (*tango.StepResponse[Services, State], error) {
+						return ctx.Machine.Done("Done"), nil
+					},
+				},
+			},
+			expectedResult:    "Done",
+			expectedError:     nil,
+			expectedStepNames: []string{"Step1", "Step2"},
 		},
-	})
-	step2 := m.NewStep(&tango.Step[Services, State]{
-		Name: "Step2",
-		Execute: func(ctx *tango.MachineContext[Services, State]) (*tango.StepResponse[Services, State], error) {
-			return m.Done("Done"), nil
-		},
-	})
-	m.AddStep(*step1)
-	m.AddStep(*step2)
-
-	// Run the machine
-	response, err := m.Run()
-
-	// Check the result and error
-	if err != nil {
-		t.Errorf("Unexpected error: %v", err)
-	}
-	if response == nil {
-		t.Errorf("Expected result to be a string, got: %v", response)
-	}
-	if response.Result != "Done" {
-		t.Errorf("Expected result to be 'Done', got: %v", response)
 	}
 
-	// Check the executed steps
-	expectedExecutedSteps := []tango.Step[Services, State]{*step1, *step2}
-	if len(m.ExecutedSteps) != len(expectedExecutedSteps) {
-		t.Errorf("Expected executed steps to be %v, got: %v", len(expectedExecutedSteps), len(m.ExecutedSteps))
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := tango.NewMachine("TestMachine", []tango.Step[Services, State]{}, &tango.MachineContext[Services, State]{}, &tango.MachineConfig[Services, State]{
+				Log: false,
+			})
+
+			for _, step := range tt.steps {
+				m.AddStep(step)
+			}
+
+			response, err := m.Run()
+
+			if tt.expectedError != nil {
+				if err == nil || err.Error() != tt.expectedError.Error() {
+					t.Errorf("expected error %v, got %v", tt.expectedError, err)
+				}
+			} else if err != nil {
+				t.Errorf("unexpected error: %v", err)
+			}
+
+			if response == nil {
+				t.Errorf("expected response to be non-nil")
+			} else if response.Result != tt.expectedResult {
+				t.Errorf("expected result to be %v, got %v", tt.expectedResult, response.Result)
+			}
+
+			if len(m.ExecutedSteps) != len(tt.expectedStepNames) {
+				t.Errorf("expected %v executed steps, got %v", len(tt.expectedStepNames), len(m.ExecutedSteps))
+			}
+
+			for i, step := range m.ExecutedSteps {
+				if step.Name != tt.expectedStepNames[i] {
+					t.Errorf("expected step %v, got %v", tt.expectedStepNames[i], step.Name)
+				}
+			}
+		})
 	}
+}
+
+type compensateTestCase struct {
+	name              string
+	steps             []tango.Step[Services, State]
+	expectedError     string
+	expectedResult    *tango.StepResponse[Services, State]
+	expectedStepNames []string
 }
 
 func TestMachine_Compensate(t *testing.T) {
-	// Create a new machine
-	m := tango.NewMachine("TestMachine", []tango.Step[Services, State]{}, &tango.MachineContext[Services, State]{}, &tango.MachineConfig[Services, State]{
-		Log: false,
-	})
-
-	// Add some steps to the machine
-	step1 := m.NewStep(&tango.Step[Services, State]{
-		Name: "Step1",
-		Execute: func(ctx *tango.MachineContext[Services, State]) (*tango.StepResponse[Services, State], error) {
-			return m.Next("Next"), nil
+	tests := []compensateTestCase{
+		{
+			name: "CompensateOnError",
+			steps: []tango.Step[Services, State]{
+				{
+					Name: "Step1",
+					Execute: func(ctx *tango.MachineContext[Services, State]) (*tango.StepResponse[Services, State], error) {
+						return ctx.Machine.Next("Next"), nil
+					},
+					Compensate: func(ctx *tango.MachineContext[Services, State]) (*tango.StepResponse[Services, State], error) {
+						return ctx.Machine.Done("Compensated"), nil
+					},
+				},
+				{
+					Name: "Step2",
+					Execute: func(ctx *tango.MachineContext[Services, State]) (*tango.StepResponse[Services, State], error) {
+						return ctx.Machine.Error("I will be compensated"), nil
+					},
+					Compensate: func(ctx *tango.MachineContext[Services, State]) (*tango.StepResponse[Services, State], error) {
+						return ctx.Machine.Done("Done"), nil
+					},
+				},
+			},
+			expectedError:     "execution error at Step2",
+			expectedResult:    nil,
+			expectedStepNames: []string{"Step1", "Step2"},
 		},
-		Compensate: func(ctx *tango.MachineContext[Services, State]) (*tango.StepResponse[Services, State], error) {
-			return m.Done("Compensated"), nil
-		},
-	})
-	step2 := m.NewStep(&tango.Step[Services, State]{
-		Name: "Step2",
-		Execute: func(ctx *tango.MachineContext[Services, State]) (*tango.StepResponse[Services, State], error) {
-			return m.Error("I will be compensated"), nil
-		},
-		Compensate: func(ctx *tango.MachineContext[Services, State]) (*tango.StepResponse[Services, State], error) {
-			return m.Done("Done"), nil
-		},
-	})
-	m.AddStep(*step1)
-	m.AddStep(*step2)
-
-	// Run the machine
-	result, err := m.Run()
-
-	// Check the result and error
-	if err.Error() != "execution error at Step2" {
-		fmt.Println(err)
-		t.Errorf("Expected error to be 'Compensated', got: %v", err)
-	}
-	if result != nil {
-		t.Errorf("Expected result to be nil, got: %v", result)
 	}
 
-	// Check the executed steps
-	expectedExecutedSteps := []tango.Step[Services, State]{*step1, *step2}
-	if len(m.ExecutedSteps) != len(expectedExecutedSteps) {
-		t.Errorf("Expected executed steps to be %v, got: %v", len(expectedExecutedSteps), len(m.ExecutedSteps))
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			context := &tango.MachineContext[Services, State]{}
+			m := tango.NewMachine("TestMachine", []tango.Step[Services, State]{}, context, &tango.MachineConfig[Services, State]{
+				Log: false,
+			})
+			context.Machine = m
+
+			for _, step := range tt.steps {
+				m.AddStep(step)
+			}
+
+			result, err := m.Run()
+
+			if err == nil || err.Error() != tt.expectedError {
+				t.Errorf("expected error %v, got %v", tt.expectedError, err)
+			}
+			if result != tt.expectedResult {
+				t.Errorf("expected result %v, got %v", tt.expectedResult, result)
+			}
+
+			if len(m.ExecutedSteps) != len(tt.expectedStepNames) {
+				t.Errorf("expected %v executed steps, got %v", len(tt.expectedStepNames), len(m.ExecutedSteps))
+			}
+
+			for i, step := range m.ExecutedSteps {
+				if step.Name != tt.expectedStepNames[i] {
+					t.Errorf("expected step %v, got %v", tt.expectedStepNames[i], step.Name)
+				}
+			}
+		})
 	}
+}
+
+type resetTestCase struct {
+	name              string
+	steps             []tango.Step[Services, State]
+	expectedSteps     int
+	expectedExecSteps int
 }
 
 func TestMachine_Reset(t *testing.T) {
-	// Create a new machine
-	m := tango.NewMachine("TestMachine", []tango.Step[Services, State]{}, &tango.MachineContext[Services, State]{}, &tango.MachineConfig[Services, State]{
-		Log: false,
-	})
-
-	// Add some steps to the machine
-	step1 := m.NewStep(&tango.Step[Services, State]{
-		Name: "Step1",
-		Execute: func(ctx *tango.MachineContext[Services, State]) (*tango.StepResponse[Services, State], error) {
-			return m.Next("Next"), nil
+	tests := []resetTestCase{
+		{
+			name: "ResetAfterRun",
+			steps: []tango.Step[Services, State]{
+				{
+					Name: "Step1",
+					Execute: func(ctx *tango.MachineContext[Services, State]) (*tango.StepResponse[Services, State], error) {
+						return ctx.Machine.Next("Next"), nil
+					},
+				},
+				{
+					Name: "Step2",
+					Execute: func(ctx *tango.MachineContext[Services, State]) (*tango.StepResponse[Services, State], error) {
+						return ctx.Machine.Done("Done"), nil
+					},
+				},
+			},
+			expectedSteps:     0,
+			expectedExecSteps: 0,
 		},
-	})
-	step2 := m.NewStep(&tango.Step[Services, State]{
-		Name: "Step2",
-		Execute: func(ctx *tango.MachineContext[Services, State]) (*tango.StepResponse[Services, State], error) {
-			return m.Done("Done"), nil
-		},
-	})
-	m.AddStep(*step1)
-	m.AddStep(*step2)
-
-	// Run the machine
-	_, _ = m.Run()
-
-	// Reset the machine
-	m.Reset()
-
-	// Check the steps
-	if len(m.Steps) != 0 {
-		t.Errorf("Expected steps to be empty, got: %v", m.Steps)
 	}
-	if len(m.ExecutedSteps) != 0 {
-		t.Errorf("Expected executed steps to be empty, got: %v", m.ExecutedSteps)
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			context := &tango.MachineContext[Services, State]{}
+			m := tango.NewMachine("TestMachine", []tango.Step[Services, State]{}, context, &tango.MachineConfig[Services, State]{
+				Log: false,
+			})
+			context.Machine = m
+
+			for _, step := range tt.steps {
+				m.AddStep(step)
+			}
+
+			_, _ = m.Run()
+
+			m.Reset()
+
+			if len(m.Steps) != tt.expectedSteps {
+				t.Errorf("expected steps to be %v, got %v", tt.expectedSteps, len(m.Steps))
+			}
+			if len(m.ExecutedSteps) != tt.expectedExecSteps {
+				t.Errorf("expected executed steps to be %v, got %v", tt.expectedExecSteps, len(m.ExecutedSteps))
+			}
+		})
 	}
+}
+
+type stateTestCase struct {
+	name            string
+	initialState    State
+	steps           []tango.Step[Services, State]
+	expectedCounter int
 }
 
 func TestMachine_Context_State(t *testing.T) {
-	// Create a new machine
-	m := tango.NewMachine("TestMachine", []tango.Step[Services, State]{}, &tango.MachineContext[Services, State]{State: State{Counter: 0}}, &tango.MachineConfig[Services, State]{
-		Log: false,
-	})
-
-	// Add some steps to the machine
-	step1 := m.NewStep(&tango.Step[Services, State]{
-		Name: "Step1",
-		Execute: func(ctx *tango.MachineContext[Services, State]) (*tango.StepResponse[Services, State], error) {
-			ctx.State.Counter++
-			return m.Next("Next"), nil
+	tests := []stateTestCase{
+		{
+			name:         "IncrementCounter",
+			initialState: State{Counter: 0},
+			steps: []tango.Step[Services, State]{
+				{
+					Name: "Step1",
+					Execute: func(ctx *tango.MachineContext[Services, State]) (*tango.StepResponse[Services, State], error) {
+						ctx.State.Counter++
+						return ctx.Machine.Next("Next"), nil
+					},
+				},
+				{
+					Name: "Step2",
+					Execute: func(ctx *tango.MachineContext[Services, State]) (*tango.StepResponse[Services, State], error) {
+						ctx.State.Counter++
+						return ctx.Machine.Done("Done"), nil
+					},
+				},
+			},
+			expectedCounter: 2,
 		},
-	})
-	step2 := m.NewStep(&tango.Step[Services, State]{
-		Name: "Step2",
-		Execute: func(ctx *tango.MachineContext[Services, State]) (*tango.StepResponse[Services, State], error) {
-			ctx.State.Counter++
-			return m.Done("Done"), nil
-		},
-	})
-	m.AddStep(*step1)
-	m.AddStep(*step2)
-
-	// Run the machine
-	_, _ = m.Run()
-
-	// Check the state
-	if m.Context.State.Counter != 2 {
-		t.Errorf("Expected state counter to be 2, got: %v", m.Context.State.Counter)
 	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			context := &tango.MachineContext[Services, State]{State: tt.initialState}
+			m := tango.NewMachine("TestMachine", []tango.Step[Services, State]{}, context, &tango.MachineConfig[Services, State]{
+				Log: false,
+			})
+			context.Machine = m
+
+			for _, step := range tt.steps {
+				m.AddStep(step)
+			}
+
+			_, _ = m.Run()
+
+			if m.Context.State.Counter != tt.expectedCounter {
+				t.Errorf("expected state counter to be %v, got %v", tt.expectedCounter, m.Context.State.Counter)
+			}
+		})
+	}
+}
+
+type servicesTestCase struct {
+	name             string
+	initialServices  Services
+	steps            []tango.Step[Services, State]
+	expectedDatabase string
 }
 
 func TestMachine_Context_Services(t *testing.T) {
-	// Create a new machine
-	m := tango.NewMachine("TestMachine", []tango.Step[Services, State]{}, &tango.MachineContext[Services, State]{Services: Services{Database: "MySQL"}}, &tango.MachineConfig[Services, State]{
-		Log: false,
-	})
-
-	// Add some steps to the machine
-	step1 := m.NewStep(&tango.Step[Services, State]{
-		Name: "Step1",
-		Execute: func(ctx *tango.MachineContext[Services, State]) (*tango.StepResponse[Services, State], error) {
-			ctx.Services.Database = "PostgreSQL"
-			return m.Next("Next"), nil
+	tests := []servicesTestCase{
+		{
+			name:            "ChangeDatabaseService",
+			initialServices: Services{Database: "MySQL"},
+			steps: []tango.Step[Services, State]{
+				{
+					Name: "Step1",
+					Execute: func(ctx *tango.MachineContext[Services, State]) (*tango.StepResponse[Services, State], error) {
+						ctx.Services.Database = "PostgreSQL"
+						return ctx.Machine.Next("Next"), nil
+					},
+				},
+				{
+					Name: "Step2",
+					Execute: func(ctx *tango.MachineContext[Services, State]) (*tango.StepResponse[Services, State], error) {
+						ctx.Services.Database = "SQLite"
+						return ctx.Machine.Done("Done"), nil
+					},
+				},
+			},
+			expectedDatabase: "SQLite",
 		},
-	})
-	step2 := m.NewStep(&tango.Step[Services, State]{
-		Name: "Step2",
-		Execute: func(ctx *tango.MachineContext[Services, State]) (*tango.StepResponse[Services, State], error) {
-			ctx.Services.Database = "SQLite"
-			return m.Done("Done"), nil
-		},
-	})
-	m.AddStep(*step1)
-	m.AddStep(*step2)
-
-	// Run the machine
-	_, _ = m.Run()
-
-	// Check the services
-	if m.Context.Services.Database != "SQLite" {
-		t.Errorf("Expected services database to be 'SQLite', got: %v", m.Context.Services.Database)
 	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			context := &tango.MachineContext[Services, State]{Services: tt.initialServices}
+			m := tango.NewMachine("TestMachine", []tango.Step[Services, State]{}, context, &tango.MachineConfig[Services, State]{
+				Log: false,
+			})
+			context.Machine = m
+
+			for _, step := range tt.steps {
+				m.AddStep(step)
+			}
+
+			_, _ = m.Run()
+
+			if m.Context.Services.Database != tt.expectedDatabase {
+				t.Errorf("expected services database to be %v, got %v", tt.expectedDatabase, m.Context.Services.Database)
+			}
+		})
+	}
+}
+
+type jumpTestCase struct {
+	name              string
+	steps             []tango.Step[Services, State]
+	expectedResult    string
+	expectedError     error
+	expectedStepNames []string
 }
 
 func TestMachine_Step_Jump(t *testing.T) {
-	// Create a new machine
-	m := tango.NewMachine("TestMachine", []tango.Step[Services, State]{}, &tango.MachineContext[Services, State]{}, &tango.MachineConfig[Services, State]{
-		Log: false,
-	})
-
-	// Add some steps to the machine
-	step1 := m.NewStep(&tango.Step[Services, State]{
-		Name: "Step1",
-		Execute: func(ctx *tango.MachineContext[Services, State]) (*tango.StepResponse[Services, State], error) {
-			return m.Jump("Jump", "Step3"), nil
+	tests := []jumpTestCase{
+		{
+			name: "JumpToStep3",
+			steps: []tango.Step[Services, State]{
+				{
+					Name: "Step1",
+					Execute: func(ctx *tango.MachineContext[Services, State]) (*tango.StepResponse[Services, State], error) {
+						return ctx.Machine.Jump("Jump", "Step3"), nil
+					},
+				},
+				{
+					Name: "Step2",
+					Execute: func(ctx *tango.MachineContext[Services, State]) (*tango.StepResponse[Services, State], error) {
+						return ctx.Machine.Error("I got skipped"), nil
+					},
+				},
+				{
+					Name: "Step3",
+					Execute: func(ctx *tango.MachineContext[Services, State]) (*tango.StepResponse[Services, State], error) {
+						return ctx.Machine.Done("Done"), nil
+					},
+				},
+			},
+			expectedResult:    "Done",
+			expectedError:     nil,
+			expectedStepNames: []string{"Step1", "Step3"},
 		},
-	})
-	step2 := m.NewStep(&tango.Step[Services, State]{
-		Name: "Step2",
-		Execute: func(ctx *tango.MachineContext[Services, State]) (*tango.StepResponse[Services, State], error) {
-			return m.Error("I got skipped"), nil
-		},
-	})
-	step3 := m.NewStep(&tango.Step[Services, State]{
-		Name: "Step3",
-		Execute: func(ctx *tango.MachineContext[Services, State]) (*tango.StepResponse[Services, State], error) {
-			return m.Done("Done"), nil
-		},
-	})
-	m.AddStep(*step1)
-	m.AddStep(*step2)
-	m.AddStep(*step3)
-
-	// Run the machine
-	response, err := m.Run()
-
-	// Check the result and error
-	if err != nil {
-		t.Errorf("Unexpected error: %v", err)
-	}
-	if response == nil {
-		t.Errorf("Expected result to be a string, got: %v", response)
-	}
-	if response.Result != "Done" {
-		t.Errorf("Expected result to be 'Done', got: %v", response)
+		// Add more test cases as needed
 	}
 
-	// Check the executed steps
-	expectedExecutedSteps := []tango.Step[Services, State]{*step1, *step2}
-	if len(m.ExecutedSteps) != len(expectedExecutedSteps) {
-		t.Errorf("Expected executed steps to be %d, got: %d", len(expectedExecutedSteps), len(m.ExecutedSteps))
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			context := &tango.MachineContext[Services, State]{}
+			m := tango.NewMachine("TestMachine", []tango.Step[Services, State]{}, context, &tango.MachineConfig[Services, State]{
+				Log: false,
+			})
+			context.Machine = m
+
+			for _, step := range tt.steps {
+				m.AddStep(step)
+			}
+
+			response, err := m.Run()
+
+			if tt.expectedError != nil {
+				if err == nil || err.Error() != tt.expectedError.Error() {
+					t.Errorf("expected error %v, got %v", tt.expectedError, err)
+				}
+			} else if err != nil {
+				t.Errorf("unexpected error: %v", err)
+			}
+
+			if response == nil {
+				t.Errorf("expected response to be non-nil")
+			} else if response.Result != tt.expectedResult {
+				t.Errorf("expected result to be %v, got %v", tt.expectedResult, response.Result)
+			}
+
+			if len(m.ExecutedSteps) != len(tt.expectedStepNames) {
+				t.Errorf("expected %v executed steps, got %v", len(tt.expectedStepNames), len(m.ExecutedSteps))
+			}
+
+			for i, step := range m.ExecutedSteps {
+				if step.Name != tt.expectedStepNames[i] {
+					t.Errorf("expected step %v, got %v", tt.expectedStepNames[i], step.Name)
+				}
+			}
+		})
 	}
 }
 
+type stepSkipTestCase struct {
+	name                  string
+	steps                 []tango.Step[Services, State]
+	expectedExecutedSteps []string
+	expectedResult        string
+	expectedError         error
+}
+
 func TestMachine_Step_Skip(t *testing.T) {
-	// Create a new machine
-	m := tango.NewMachine("TestMachine", []tango.Step[Services, State]{}, &tango.MachineContext[Services, State]{}, &tango.MachineConfig[Services, State]{
-		Log: false,
-	})
-
-	// Add some steps to the machine
-	step1 := m.NewStep(&tango.Step[Services, State]{
-		Name: "Step1",
-		Execute: func(ctx *tango.MachineContext[Services, State]) (*tango.StepResponse[Services, State], error) {
-			return m.Skip("Skip", 1), nil
+	tests := []stepSkipTestCase{
+		{
+			name: "SkipStep",
+			steps: []tango.Step[Services, State]{
+				{
+					Name: "Step1",
+					Execute: func(ctx *tango.MachineContext[Services, State]) (*tango.StepResponse[Services, State], error) {
+						return ctx.Machine.Skip("Skip", 1), nil
+					},
+				},
+				{
+					Name: "Step2",
+					Execute: func(ctx *tango.MachineContext[Services, State]) (*tango.StepResponse[Services, State], error) {
+						return ctx.Machine.Error("I will be skipped"), nil
+					},
+				},
+				{
+					Name: "Step3",
+					Execute: func(ctx *tango.MachineContext[Services, State]) (*tango.StepResponse[Services, State], error) {
+						return ctx.Machine.Done("Done"), nil
+					},
+				},
+			},
+			expectedExecutedSteps: []string{"Step1", "Step3"},
+			expectedResult:        "Done",
+			expectedError:         nil,
 		},
-	})
-	step2 := m.NewStep(&tango.Step[Services, State]{
-		Name: "Step2",
-		Execute: func(ctx *tango.MachineContext[Services, State]) (*tango.StepResponse[Services, State], error) {
-			return m.Error("I will be skipped"), nil
-		},
-	})
-	step3 := m.NewStep(&tango.Step[Services, State]{
-		Name: "Step3",
-		Execute: func(ctx *tango.MachineContext[Services, State]) (*tango.StepResponse[Services, State], error) {
-			return m.Done("Done"), nil
-		},
-	})
-	m.AddStep(*step1)
-	m.AddStep(*step2)
-	m.AddStep(*step3)
-
-	// Run the machine
-	response, err := m.Run()
-
-	// Check the result and error
-	if err != nil {
-		t.Errorf("Unexpected error: %v", err)
-	}
-	if response == nil {
-		t.Errorf("Expected result to be a string, got: %v", response)
-	}
-	if response.Result != "Done" {
-		t.Errorf("Expected result to be 'Done', got: %v", response)
+		// Add more test cases as needed
 	}
 
-	// Check the executed steps
-	expectedExecutedSteps := []tango.Step[Services, State]{*step1, *step2}
-	if len(m.ExecutedSteps) != len(expectedExecutedSteps) {
-		t.Errorf("Expected executed steps to be %d, got: %d", len(expectedExecutedSteps), len(m.ExecutedSteps))
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			context := &tango.MachineContext[Services, State]{}
+			m := tango.NewMachine("TestMachine", []tango.Step[Services, State]{}, context, &tango.MachineConfig[Services, State]{
+				Log: false,
+			})
+			context.Machine = m
+
+			for _, step := range tt.steps {
+				m.AddStep(step)
+			}
+
+			response, err := m.Run()
+
+			if err != tt.expectedError {
+				t.Errorf("unexpected error: %v", err)
+			}
+			if response == nil {
+				t.Errorf("expected response to be non-nil, got nil")
+			} else if response.Result != tt.expectedResult {
+				t.Errorf("expected result to be %v, got %v", tt.expectedResult, response.Result)
+			}
+
+			executedStepNames := []string{}
+			for _, step := range m.ExecutedSteps {
+				executedStepNames = append(executedStepNames, step.Name)
+			}
+			if len(executedStepNames) != len(tt.expectedExecutedSteps) {
+				t.Errorf("expected executed steps to be %v, got %v", tt.expectedExecutedSteps, executedStepNames)
+			}
+		})
 	}
 }
 
