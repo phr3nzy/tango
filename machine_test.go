@@ -30,13 +30,13 @@ func TestMachine_Run(t *testing.T) {
 			steps: []tango.Step[Services, State]{
 				{
 					Name: "Step1",
-					Execute: func(ctx *tango.MachineContext[Services, State]) (*tango.StepResponse[Services, State], error) {
+					Execute: func(ctx *tango.MachineContext[Services, State]) (*tango.Response[Services, State], error) {
 						return ctx.Machine.Next("Next"), nil
 					},
 				},
 				{
 					Name: "Step2",
-					Execute: func(ctx *tango.MachineContext[Services, State]) (*tango.StepResponse[Services, State], error) {
+					Execute: func(ctx *tango.MachineContext[Services, State]) (*tango.Response[Services, State], error) {
 						return ctx.Machine.Done("Done"), nil
 					},
 				},
@@ -90,7 +90,7 @@ type compensateTestCase struct {
 	name              string
 	steps             []tango.Step[Services, State]
 	expectedError     string
-	expectedResult    *tango.StepResponse[Services, State]
+	expectedResult    *tango.Response[Services, State]
 	expectedStepNames []string
 }
 
@@ -101,24 +101,24 @@ func TestMachine_Compensate(t *testing.T) {
 			steps: []tango.Step[Services, State]{
 				{
 					Name: "Step1",
-					Execute: func(ctx *tango.MachineContext[Services, State]) (*tango.StepResponse[Services, State], error) {
+					Execute: func(ctx *tango.MachineContext[Services, State]) (*tango.Response[Services, State], error) {
 						return ctx.Machine.Next("Next"), nil
 					},
-					Compensate: func(ctx *tango.MachineContext[Services, State]) (*tango.StepResponse[Services, State], error) {
+					Compensate: func(ctx *tango.MachineContext[Services, State]) (*tango.Response[Services, State], error) {
 						return ctx.Machine.Done("Compensated"), nil
 					},
 				},
 				{
 					Name: "Step2",
-					Execute: func(ctx *tango.MachineContext[Services, State]) (*tango.StepResponse[Services, State], error) {
+					Execute: func(ctx *tango.MachineContext[Services, State]) (*tango.Response[Services, State], error) {
 						return ctx.Machine.Error("I will be compensated"), nil
 					},
-					Compensate: func(ctx *tango.MachineContext[Services, State]) (*tango.StepResponse[Services, State], error) {
+					Compensate: func(ctx *tango.MachineContext[Services, State]) (*tango.Response[Services, State], error) {
 						return ctx.Machine.Done("Done"), nil
 					},
 				},
 			},
-			expectedError:     "execution error at Step2",
+			expectedError:     "step Step2 failed: I will be compensated",
 			expectedResult:    nil,
 			expectedStepNames: []string{"Step1", "Step2"},
 		},
@@ -158,6 +158,87 @@ func TestMachine_Compensate(t *testing.T) {
 	}
 }
 
+type compensateStateTestCase struct {
+	name              string
+	steps             []tango.Step[Services, State]
+	expectedError     string
+	expectedResult    *tango.Response[Services, State]
+	expectedStepNames []string
+}
+
+func TestMachine_Compensate_State(t *testing.T) {
+	tests := []compensateStateTestCase{
+		{
+			name: "CompensateStateOnError",
+			steps: []tango.Step[Services, State]{
+				{
+					Name: "Step1",
+					Execute: func(ctx *tango.MachineContext[Services, State]) (*tango.Response[Services, State], error) {
+						ctx.State.Counter++
+						return ctx.Machine.Next("Next"), nil
+					},
+					Compensate: func(ctx *tango.MachineContext[Services, State]) (*tango.Response[Services, State], error) {
+						ctx.State.Counter--
+						return ctx.Machine.Done("Compensated"), nil
+					},
+				},
+				{
+					Name: "Step2",
+					Execute: func(ctx *tango.MachineContext[Services, State]) (*tango.Response[Services, State], error) {
+						ctx.State.Counter++
+						return ctx.Machine.Error("I will be compensated"), nil
+					},
+					Compensate: func(ctx *tango.MachineContext[Services, State]) (*tango.Response[Services, State], error) {
+						ctx.State.Counter--
+						return ctx.Machine.Done("Done"), nil
+					},
+				},
+			},
+			expectedError:     "step Step2 failed: I will be compensated",
+			expectedResult:    nil,
+			expectedStepNames: []string{"Step1", "Step2"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			context := &tango.MachineContext[Services, State]{State: State{Counter: 0}}
+			m := tango.NewMachine("TestMachine", []tango.Step[Services, State]{}, context, &tango.MachineConfig[Services, State]{
+				Log: false,
+			})
+			context.Machine = m
+
+			for _, step := range tt.steps {
+				m.AddStep(step)
+			}
+
+			result, err := m.Run()
+
+			if err == nil || err.Error() != tt.expectedError {
+				t.Errorf("expected error %v, got %v", tt.expectedError, err)
+			}
+			if result != tt.expectedResult {
+				t.Errorf("expected result %v, got %v", tt.expectedResult, result)
+			}
+
+			if len(m.ExecutedSteps) != len(tt.expectedStepNames) {
+				t.Errorf("expected %v executed steps, got %v", len(tt.expectedStepNames), len(m.ExecutedSteps))
+			}
+
+			for i, step := range m.ExecutedSteps {
+				if step.Name != tt.expectedStepNames[i] {
+					t.Errorf("expected step %v, got %v", tt.expectedStepNames[i], step.Name)
+				}
+			}
+
+			if m.Context.State.Counter != 0 {
+				t.Errorf("expected state counter to be 0, got %v", m.Context.State.Counter)
+			}
+
+		})
+	}
+}
+
 type resetTestCase struct {
 	name              string
 	steps             []tango.Step[Services, State]
@@ -172,13 +253,13 @@ func TestMachine_Reset(t *testing.T) {
 			steps: []tango.Step[Services, State]{
 				{
 					Name: "Step1",
-					Execute: func(ctx *tango.MachineContext[Services, State]) (*tango.StepResponse[Services, State], error) {
+					Execute: func(ctx *tango.MachineContext[Services, State]) (*tango.Response[Services, State], error) {
 						return ctx.Machine.Next("Next"), nil
 					},
 				},
 				{
 					Name: "Step2",
-					Execute: func(ctx *tango.MachineContext[Services, State]) (*tango.StepResponse[Services, State], error) {
+					Execute: func(ctx *tango.MachineContext[Services, State]) (*tango.Response[Services, State], error) {
 						return ctx.Machine.Done("Done"), nil
 					},
 				},
@@ -229,14 +310,14 @@ func TestMachine_Context_State(t *testing.T) {
 			steps: []tango.Step[Services, State]{
 				{
 					Name: "Step1",
-					Execute: func(ctx *tango.MachineContext[Services, State]) (*tango.StepResponse[Services, State], error) {
+					Execute: func(ctx *tango.MachineContext[Services, State]) (*tango.Response[Services, State], error) {
 						ctx.State.Counter++
 						return ctx.Machine.Next("Next"), nil
 					},
 				},
 				{
 					Name: "Step2",
-					Execute: func(ctx *tango.MachineContext[Services, State]) (*tango.StepResponse[Services, State], error) {
+					Execute: func(ctx *tango.MachineContext[Services, State]) (*tango.Response[Services, State], error) {
 						ctx.State.Counter++
 						return ctx.Machine.Done("Done"), nil
 					},
@@ -282,14 +363,14 @@ func TestMachine_Context_Services(t *testing.T) {
 			steps: []tango.Step[Services, State]{
 				{
 					Name: "Step1",
-					Execute: func(ctx *tango.MachineContext[Services, State]) (*tango.StepResponse[Services, State], error) {
+					Execute: func(ctx *tango.MachineContext[Services, State]) (*tango.Response[Services, State], error) {
 						ctx.Services.Database = "PostgreSQL"
 						return ctx.Machine.Next("Next"), nil
 					},
 				},
 				{
 					Name: "Step2",
-					Execute: func(ctx *tango.MachineContext[Services, State]) (*tango.StepResponse[Services, State], error) {
+					Execute: func(ctx *tango.MachineContext[Services, State]) (*tango.Response[Services, State], error) {
 						ctx.Services.Database = "SQLite"
 						return ctx.Machine.Done("Done"), nil
 					},
@@ -335,19 +416,19 @@ func TestMachine_Step_Jump(t *testing.T) {
 			steps: []tango.Step[Services, State]{
 				{
 					Name: "Step1",
-					Execute: func(ctx *tango.MachineContext[Services, State]) (*tango.StepResponse[Services, State], error) {
+					Execute: func(ctx *tango.MachineContext[Services, State]) (*tango.Response[Services, State], error) {
 						return ctx.Machine.Jump("Jump", "Step3"), nil
 					},
 				},
 				{
 					Name: "Step2",
-					Execute: func(ctx *tango.MachineContext[Services, State]) (*tango.StepResponse[Services, State], error) {
+					Execute: func(ctx *tango.MachineContext[Services, State]) (*tango.Response[Services, State], error) {
 						return ctx.Machine.Error("I got skipped"), nil
 					},
 				},
 				{
 					Name: "Step3",
-					Execute: func(ctx *tango.MachineContext[Services, State]) (*tango.StepResponse[Services, State], error) {
+					Execute: func(ctx *tango.MachineContext[Services, State]) (*tango.Response[Services, State], error) {
 						return ctx.Machine.Done("Done"), nil
 					},
 				},
@@ -415,19 +496,19 @@ func TestMachine_Step_Skip(t *testing.T) {
 			steps: []tango.Step[Services, State]{
 				{
 					Name: "Step1",
-					Execute: func(ctx *tango.MachineContext[Services, State]) (*tango.StepResponse[Services, State], error) {
+					Execute: func(ctx *tango.MachineContext[Services, State]) (*tango.Response[Services, State], error) {
 						return ctx.Machine.Skip("Skip", 1), nil
 					},
 				},
 				{
 					Name: "Step2",
-					Execute: func(ctx *tango.MachineContext[Services, State]) (*tango.StepResponse[Services, State], error) {
+					Execute: func(ctx *tango.MachineContext[Services, State]) (*tango.Response[Services, State], error) {
 						return ctx.Machine.Error("I will be skipped"), nil
 					},
 				},
 				{
 					Name: "Step3",
-					Execute: func(ctx *tango.MachineContext[Services, State]) (*tango.StepResponse[Services, State], error) {
+					Execute: func(ctx *tango.MachineContext[Services, State]) (*tango.Response[Services, State], error) {
 						return ctx.Machine.Done("Done"), nil
 					},
 				},
@@ -480,20 +561,18 @@ func BenchmarkMachine_Run(b *testing.B) {
 	})
 
 	// Add some steps to the machine
-	step1 := m.NewStep(&tango.Step[Services, State]{
+	m.NewStep(&tango.Step[Services, State]{
 		Name: "Step1",
-		Execute: func(ctx *tango.MachineContext[Services, State]) (*tango.StepResponse[Services, State], error) {
+		Execute: func(ctx *tango.MachineContext[Services, State]) (*tango.Response[Services, State], error) {
 			return m.Next("Next"), nil
 		},
 	})
-	step2 := m.NewStep(&tango.Step[Services, State]{
+	m.NewStep(&tango.Step[Services, State]{
 		Name: "Step2",
-		Execute: func(ctx *tango.MachineContext[Services, State]) (*tango.StepResponse[Services, State], error) {
+		Execute: func(ctx *tango.MachineContext[Services, State]) (*tango.Response[Services, State], error) {
 			return m.Done("Done"), nil
 		},
 	})
-	m.AddStep(*step1)
-	m.AddStep(*step2)
 
 	// Run the machine
 	for i := 0; i < b.N; i++ {
@@ -508,26 +587,24 @@ func BenchmarkMachine_Compensate(b *testing.B) {
 	})
 
 	// Add some steps to the machine
-	step1 := m.NewStep(&tango.Step[Services, State]{
+	m.NewStep(&tango.Step[Services, State]{
 		Name: "Step1",
-		Execute: func(ctx *tango.MachineContext[Services, State]) (*tango.StepResponse[Services, State], error) {
+		Execute: func(ctx *tango.MachineContext[Services, State]) (*tango.Response[Services, State], error) {
 			return m.Next("Next"), nil
 		},
-		Compensate: func(ctx *tango.MachineContext[Services, State]) (*tango.StepResponse[Services, State], error) {
+		Compensate: func(ctx *tango.MachineContext[Services, State]) (*tango.Response[Services, State], error) {
 			return m.Done("Compensated"), nil
 		},
 	})
-	step2 := m.NewStep(&tango.Step[Services, State]{
+	m.NewStep(&tango.Step[Services, State]{
 		Name: "Step2",
-		Execute: func(ctx *tango.MachineContext[Services, State]) (*tango.StepResponse[Services, State], error) {
+		Execute: func(ctx *tango.MachineContext[Services, State]) (*tango.Response[Services, State], error) {
 			return m.Error("I will be compensated"), nil
 		},
-		Compensate: func(ctx *tango.MachineContext[Services, State]) (*tango.StepResponse[Services, State], error) {
+		Compensate: func(ctx *tango.MachineContext[Services, State]) (*tango.Response[Services, State], error) {
 			return m.Done("Done"), nil
 		},
 	})
-	m.AddStep(*step1)
-	m.AddStep(*step2)
 
 	// Run the machine
 	for i := 0; i < b.N; i++ {
@@ -542,20 +619,18 @@ func BenchmarkMachine_Reset(b *testing.B) {
 	})
 
 	// Add some steps to the machine
-	step1 := m.NewStep(&tango.Step[Services, State]{
+	m.NewStep(&tango.Step[Services, State]{
 		Name: "Step1",
-		Execute: func(ctx *tango.MachineContext[Services, State]) (*tango.StepResponse[Services, State], error) {
+		Execute: func(ctx *tango.MachineContext[Services, State]) (*tango.Response[Services, State], error) {
 			return m.Next("Next"), nil
 		},
 	})
-	step2 := m.NewStep(&tango.Step[Services, State]{
+	m.NewStep(&tango.Step[Services, State]{
 		Name: "Step2",
-		Execute: func(ctx *tango.MachineContext[Services, State]) (*tango.StepResponse[Services, State], error) {
+		Execute: func(ctx *tango.MachineContext[Services, State]) (*tango.Response[Services, State], error) {
 			return m.Done("Done"), nil
 		},
 	})
-	m.AddStep(*step1)
-	m.AddStep(*step2)
 
 	// Run the machine
 	_, _ = m.Run()
@@ -578,21 +653,20 @@ func BenchmarkMachine_100Steps_Run(b *testing.B) {
 
 	// Add 100 steps to the machine
 	for i := 0; i < 100; i++ {
-		step := m.NewStep(&tango.Step[Services, State]{
+		m.NewStep(&tango.Step[Services, State]{
 			Name: fmt.Sprintf("Step%d", i),
-			Execute: func(ctx *tango.MachineContext[Services, State]) (*tango.StepResponse[Services, State], error) {
+			Execute: func(ctx *tango.MachineContext[Services, State]) (*tango.Response[Services, State], error) {
 				return m.Next("Next"), nil
 			},
 		})
-		m.AddStep(*step)
 	}
 
-	m.AddStep(*m.NewStep(&tango.Step[Services, State]{
+	m.NewStep(&tango.Step[Services, State]{
 		Name: "LastStep",
-		Execute: func(ctx *tango.MachineContext[Services, State]) (*tango.StepResponse[Services, State], error) {
+		Execute: func(ctx *tango.MachineContext[Services, State]) (*tango.Response[Services, State], error) {
 			return m.Done("Done"), nil
 		},
-	}))
+	})
 
 	// Run the machine
 	for i := 0; i < b.N; i++ {
