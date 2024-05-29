@@ -5,36 +5,40 @@ import (
 	"sync"
 )
 
-type MachineContext[S, T any] struct {
-	Services       S
-	PreviousResult *StepResponse[S, T]
-	State          T
-	Machine        *Machine[S, T]
+// ResponseStatus is a type that represents the status of a response.
+type MachineContext[Services, State any] struct {
+	Services       Services
+	PreviousResult *Response[Services, State]
+	State          State
+	Machine        *Machine[Services, State]
 }
 
-type MachineConfig[S, T any] struct {
+// Plugin is an interface that represents a machine plugin.
+type MachineConfig[Services, State any] struct {
 	Log      bool
 	LogLevel string
-	Plugins  []Plugin[S, T]
+	Plugins  []Plugin[Services, State]
 }
 
-type Machine[S, T any] struct {
+// Machine is a struct that represents a machine.
+type Machine[Services, State any] struct {
 	Name           string
-	Context        *MachineContext[S, T]
-	Steps          []Step[S, T]
-	ExecutedSteps  []Step[S, T]
-	InitialContext *MachineContext[S, T]
-	Config         *MachineConfig[S, T]
+	Context        *MachineContext[Services, State]
+	Steps          []Step[Services, State]
+	ExecutedSteps  []Step[Services, State]
+	InitialContext *MachineContext[Services, State]
+	Config         *MachineConfig[Services, State]
 	mu             sync.Mutex
 }
 
-func NewMachine[S, T any](
+// NewMachine creates a new machine.
+func NewMachine[Services, State any](
 	name string,
-	steps []Step[S, T],
-	initialContext *MachineContext[S, T],
-	config *MachineConfig[S, T],
-) *Machine[S, T] {
-	m := &Machine[S, T]{
+	steps []Step[Services, State],
+	initialContext *MachineContext[Services, State],
+	config *MachineConfig[Services, State],
+) *Machine[Services, State] {
+	m := &Machine[Services, State]{
 		Name:           name,
 		Steps:          steps,
 		InitialContext: initialContext,
@@ -45,17 +49,20 @@ func NewMachine[S, T any](
 	return m
 }
 
-func (m *Machine[S, T]) AddStep(step Step[S, T]) {
+// AddStep adds a step to the machine.
+func (m *Machine[Services, State]) AddStep(step Step[Services, State]) {
 	m.Steps = append(m.Steps, step)
 }
 
-func (m *Machine[S, T]) Reset() {
+// Reset resets the machine to its initial state. It clears the context and executed steps.
+func (m *Machine[Services, State]) Reset() {
 	m.Steps = nil
 	m.Context = m.InitialContext
 	m.ExecutedSteps = nil
 }
 
-func (m *Machine[S, T]) Run() (*StepResponse[S, T], error) {
+// Run executes the machine steps.
+func (m *Machine[Services, State]) Run() (*Response[Services, State], error) {
 	if len(m.Steps) == 0 {
 		return nil, fmt.Errorf("no steps to execute")
 	}
@@ -79,7 +86,11 @@ func (m *Machine[S, T]) Run() (*StepResponse[S, T], error) {
 		case DONE:
 			return response, nil
 		case ERROR:
-			return nil, fmt.Errorf("execution error at %s", step.Name)
+			cResponse, err := m.Compensate()
+			if err != nil {
+				return nil, fmt.Errorf("compensate error: %v", err)
+			}
+			return cResponse, fmt.Errorf("step %s failed: %v", step.Name, response.Result)
 		case SKIP:
 			i += response.SkipCount
 		case JUMP:
@@ -107,10 +118,16 @@ func (m *Machine[S, T]) Run() (*StepResponse[S, T], error) {
 	return nil, nil
 }
 
-func (m *Machine[S, T]) executeStep(step Step[S, T]) (*StepResponse[S, T], error) {
-
+// executeStep runs the step and its before and after functions.
+func (m *Machine[Services, State]) executeStep(step Step[Services, State]) (*Response[Services, State], error) {
 	if m.Config.Log {
 		fmt.Printf("Executing step: %s\n", step.Name)
+	}
+
+	for _, plugin := range m.Config.Plugins {
+		if err := plugin.Execute(m.Context); err != nil {
+			return nil, fmt.Errorf("plugin before step error: %v", err)
+		}
 	}
 
 	if step.BeforeExecute != nil {
@@ -137,7 +154,8 @@ func (m *Machine[S, T]) executeStep(step Step[S, T]) (*StepResponse[S, T], error
 	return response, nil
 }
 
-func (m *Machine[S, T]) Compensate() (*StepResponse[S, T], error) {
+// Compensate runs the compensate functions of the executed steps.
+func (m *Machine[Services, State]) Compensate() (*Response[Services, State], error) {
 	m.Context = m.InitialContext
 	for i := len(m.ExecutedSteps) - 1; i >= 0; i-- {
 		step := m.ExecutedSteps[i]
@@ -161,28 +179,35 @@ func (m *Machine[S, T]) Compensate() (*StepResponse[S, T], error) {
 	return nil, nil
 }
 
+// Result is an alias for any.
 type Result interface{}
 
-func (m *Machine[S, T]) NewStep(step *Step[S, T]) *Step[S, T] {
-	return NewStep(step)
+// NewStep creates a new step.
+func (m *Machine[Services, State]) NewStep(step *Step[Services, State]) {
+	m.AddStep(*NewStep(step))
 }
 
-func (m *Machine[S, T]) Next(result Result) *StepResponse[S, T] {
-	return Next[Result, S, T](result)
+// Next creates a response with status NEXT.
+func (m *Machine[Services, State]) Next(result Result) *Response[Services, State] {
+	return Next[Result, Services, State](result)
 }
 
-func (m *Machine[S, T]) Done(result Result) *StepResponse[S, T] {
-	return Done[Result, S, T](result)
+// Done creates a response with status DONE.
+func (m *Machine[Services, State]) Done(result Result) *Response[Services, State] {
+	return Done[Result, Services, State](result)
 }
 
-func (m *Machine[S, T]) Error(result Result) *StepResponse[S, T] {
-	return Error[Result, S, T](result)
+// Error creates a response with status ERROR.
+func (m *Machine[Services, State]) Error(result Result) *Response[Services, State] {
+	return Error[Result, Services, State](result)
 }
 
-func (m *Machine[S, T]) Skip(result Result, count int) *StepResponse[S, T] {
-	return Skip[Result, S, T](result, count)
+// Skip creates a response with status SKIP.
+func (m *Machine[Services, State]) Skip(result Result, count int) *Response[Services, State] {
+	return Skip[Result, Services, State](result, count)
 }
 
-func (m *Machine[S, T]) Jump(result any, target string) *StepResponse[S, T] {
-	return Jump[Result, S, T](result, target)
+// Jump creates a response with status JUMP.
+func (m *Machine[Services, State]) Jump(result any, target string) *Response[Services, State] {
+	return Jump[Result, Services, State](result, target)
 }
