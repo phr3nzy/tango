@@ -51,7 +51,7 @@ func TestMachine_Run(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			m := tango.NewMachine("TestMachine", []tango.Step[Services, State]{}, &tango.MachineContext[Services, State]{}, &tango.MachineConfig[Services, State]{
 				Log: false,
-			})
+			}, &tango.SequentialStrategy[Services, State]{})
 
 			for _, step := range tt.steps {
 				m.AddStep(step)
@@ -129,7 +129,7 @@ func TestMachine_Compensate(t *testing.T) {
 			context := &tango.MachineContext[Services, State]{}
 			m := tango.NewMachine("TestMachine", []tango.Step[Services, State]{}, context, &tango.MachineConfig[Services, State]{
 				Log: false,
-			})
+			}, &tango.SequentialStrategy[Services, State]{})
 			context.Machine = m
 
 			for _, step := range tt.steps {
@@ -205,7 +205,7 @@ func TestMachine_Compensate_State(t *testing.T) {
 			context := &tango.MachineContext[Services, State]{State: State{Counter: 0}}
 			m := tango.NewMachine("TestMachine", []tango.Step[Services, State]{}, context, &tango.MachineConfig[Services, State]{
 				Log: false,
-			})
+			}, &tango.SequentialStrategy[Services, State]{})
 			context.Machine = m
 
 			for _, step := range tt.steps {
@@ -274,7 +274,7 @@ func TestMachine_Reset(t *testing.T) {
 			context := &tango.MachineContext[Services, State]{}
 			m := tango.NewMachine("TestMachine", []tango.Step[Services, State]{}, context, &tango.MachineConfig[Services, State]{
 				Log: false,
-			})
+			}, &tango.SequentialStrategy[Services, State]{})
 			context.Machine = m
 
 			for _, step := range tt.steps {
@@ -332,7 +332,7 @@ func TestMachine_Context_State(t *testing.T) {
 			context := &tango.MachineContext[Services, State]{State: tt.initialState}
 			m := tango.NewMachine("TestMachine", []tango.Step[Services, State]{}, context, &tango.MachineConfig[Services, State]{
 				Log: false,
-			})
+			}, &tango.SequentialStrategy[Services, State]{})
 			context.Machine = m
 
 			for _, step := range tt.steps {
@@ -385,7 +385,7 @@ func TestMachine_Context_Services(t *testing.T) {
 			context := &tango.MachineContext[Services, State]{Services: tt.initialServices}
 			m := tango.NewMachine("TestMachine", []tango.Step[Services, State]{}, context, &tango.MachineConfig[Services, State]{
 				Log: false,
-			})
+			}, &tango.SequentialStrategy[Services, State]{})
 			context.Machine = m
 
 			for _, step := range tt.steps {
@@ -445,7 +445,7 @@ func TestMachine_Step_Jump(t *testing.T) {
 			context := &tango.MachineContext[Services, State]{}
 			m := tango.NewMachine("TestMachine", []tango.Step[Services, State]{}, context, &tango.MachineConfig[Services, State]{
 				Log: false,
-			})
+			}, &tango.SequentialStrategy[Services, State]{})
 			context.Machine = m
 
 			for _, step := range tt.steps {
@@ -525,7 +525,7 @@ func TestMachine_Step_Skip(t *testing.T) {
 			context := &tango.MachineContext[Services, State]{}
 			m := tango.NewMachine("TestMachine", []tango.Step[Services, State]{}, context, &tango.MachineConfig[Services, State]{
 				Log: false,
-			})
+			}, &tango.SequentialStrategy[Services, State]{})
 			context.Machine = m
 
 			for _, step := range tt.steps {
@@ -554,11 +554,37 @@ func TestMachine_Step_Skip(t *testing.T) {
 	}
 }
 
-func BenchmarkMachine_Run(b *testing.B) {
+func BenchmarkMachine_Run_Sequential(b *testing.B) {
 	// Create a new machine
 	m := tango.NewMachine("TestMachine", []tango.Step[Services, State]{}, &tango.MachineContext[Services, State]{}, &tango.MachineConfig[Services, State]{
 		Log: false,
+	}, &tango.SequentialStrategy[Services, State]{})
+
+	// Add some steps to the machine
+	m.NewStep(&tango.Step[Services, State]{
+		Name: "Step1",
+		Execute: func(ctx *tango.MachineContext[Services, State]) (*tango.Response[Services, State], error) {
+			return m.Next("Next"), nil
+		},
 	})
+	m.NewStep(&tango.Step[Services, State]{
+		Name: "Step2",
+		Execute: func(ctx *tango.MachineContext[Services, State]) (*tango.Response[Services, State], error) {
+			return m.Done("Done"), nil
+		},
+	})
+
+	// Run the machine
+	for i := 0; i < b.N; i++ {
+		_, _ = m.Run()
+	}
+}
+
+func BenchmarkMachine_Run_Concurrent(b *testing.B) {
+	// Create a new machine
+	m := tango.NewMachine("TestMachine", []tango.Step[Services, State]{}, &tango.MachineContext[Services, State]{}, &tango.MachineConfig[Services, State]{
+		Log: false,
+	}, &tango.ConcurrentStrategy[Services, State]{})
 
 	// Add some steps to the machine
 	m.NewStep(&tango.Step[Services, State]{
@@ -584,7 +610,7 @@ func BenchmarkMachine_Compensate(b *testing.B) {
 	// Create a new machine
 	m := tango.NewMachine("TestMachine", []tango.Step[Services, State]{}, &tango.MachineContext[Services, State]{}, &tango.MachineConfig[Services, State]{
 		Log: false,
-	})
+	}, &tango.SequentialStrategy[Services, State]{})
 
 	// Add some steps to the machine
 	m.NewStep(&tango.Step[Services, State]{
@@ -616,7 +642,7 @@ func BenchmarkMachine_Reset(b *testing.B) {
 	// Create a new machine
 	m := tango.NewMachine("TestMachine", []tango.Step[Services, State]{}, &tango.MachineContext[Services, State]{}, &tango.MachineConfig[Services, State]{
 		Log: false,
-	})
+	}, &tango.SequentialStrategy[Services, State]{})
 
 	// Add some steps to the machine
 	m.NewStep(&tango.Step[Services, State]{
@@ -641,7 +667,7 @@ func BenchmarkMachine_Reset(b *testing.B) {
 	}
 }
 
-func BenchmarkMachine_100Steps_Run(b *testing.B) {
+func BenchmarkMachine_100Steps_Run_Sequential(b *testing.B) {
 	// Create a new machine
 	m := tango.NewMachine(
 		"TestMachine",
@@ -649,7 +675,44 @@ func BenchmarkMachine_100Steps_Run(b *testing.B) {
 		&tango.MachineContext[Services, State]{},
 		&tango.MachineConfig[Services, State]{
 			Log: false,
+		},
+		&tango.SequentialStrategy[Services, State]{},
+	)
+
+	// Add 100 steps to the machine
+	for i := 0; i < 100; i++ {
+		m.NewStep(&tango.Step[Services, State]{
+			Name: fmt.Sprintf("Step%d", i),
+			Execute: func(ctx *tango.MachineContext[Services, State]) (*tango.Response[Services, State], error) {
+				return m.Next("Next"), nil
+			},
 		})
+	}
+
+	m.NewStep(&tango.Step[Services, State]{
+		Name: "LastStep",
+		Execute: func(ctx *tango.MachineContext[Services, State]) (*tango.Response[Services, State], error) {
+			return m.Done("Done"), nil
+		},
+	})
+
+	// Run the machine
+	for i := 0; i < b.N; i++ {
+		_, _ = m.Run()
+	}
+}
+
+func BenchmarkMachine_100Steps_Run_Concurrent(b *testing.B) {
+	// Create a new machine
+	m := tango.NewMachine(
+		"TestMachine",
+		[]tango.Step[Services, State]{},
+		&tango.MachineContext[Services, State]{},
+		&tango.MachineConfig[Services, State]{
+			Log: false,
+		},
+		&tango.ConcurrentStrategy[Services, State]{},
+	)
 
 	// Add 100 steps to the machine
 	for i := 0; i < 100; i++ {
