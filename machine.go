@@ -29,6 +29,7 @@ type Machine[Services, State any] struct {
 	InitialContext *MachineContext[Services, State]
 	Config         *MachineConfig[Services, State]
 	mu             sync.Mutex
+	Strategy       ExecutionStrategy[Services, State]
 }
 
 // NewMachine creates a new machine.
@@ -37,6 +38,7 @@ func NewMachine[Services, State any](
 	steps []Step[Services, State],
 	initialContext *MachineContext[Services, State],
 	config *MachineConfig[Services, State],
+	strategy ExecutionStrategy[Services, State],
 ) *Machine[Services, State] {
 	m := &Machine[Services, State]{
 		Name:           name,
@@ -44,6 +46,7 @@ func NewMachine[Services, State any](
 		InitialContext: initialContext,
 		Context:        initialContext,
 		Config:         config,
+		Strategy:       strategy,
 	}
 	m.Context.Machine = m
 	return m
@@ -67,46 +70,19 @@ func (m *Machine[Services, State]) Run() (*Response[Services, State], error) {
 		return nil, fmt.Errorf("no steps to execute")
 	}
 
-	for i := 0; i < len(m.Steps); i++ {
-		step := m.Steps[i]
-
-		response, err := m.executeStep(step)
-		if err != nil {
-			return nil, err
+	for _, plugin := range m.Config.Plugins {
+		if err := plugin.Init(m.Context); err != nil {
+			return nil, fmt.Errorf("plugin setup error: %v", err)
 		}
-
-		m.mu.Lock()
-		m.ExecutedSteps = append(m.ExecutedSteps, step)
-		m.Context.PreviousResult = response
-		m.mu.Unlock()
-
-		switch response.Status {
-		case NEXT:
-			continue
-		case DONE:
-			return response, nil
-		case ERROR:
-			cResponse, err := m.Compensate()
-			if err != nil {
-				return nil, fmt.Errorf("compensate error: %v", err)
-			}
-			return cResponse, fmt.Errorf("step %s failed: %v", step.Name, response.Result)
-		case SKIP:
-			i += response.SkipCount
-		case JUMP:
-			targetIndex := -1
-			for index, s := range m.Steps {
-				if s.Name == response.JumpTarget {
-					targetIndex = index
-					break
-				}
-			}
-			if targetIndex >= 0 {
-				i = targetIndex - 1
-			} else {
-				return nil, fmt.Errorf("jump target '%s' not found at %s", response.JumpTarget, step.Name)
-			}
+		newStrategy := plugin.ModifyExecutionStrategy(m)
+		if newStrategy != nil {
+			m.Strategy = newStrategy
 		}
+	}
+
+	response, err := m.Strategy.Execute(m)
+	if err != nil {
+		return nil, err
 	}
 
 	for _, plugin := range m.Config.Plugins {
@@ -115,13 +91,13 @@ func (m *Machine[Services, State]) Run() (*Response[Services, State], error) {
 		}
 	}
 
-	return nil, nil
+	return response, nil
 }
 
 // executeStep runs the step and its before and after functions.
 func (m *Machine[Services, State]) executeStep(step Step[Services, State]) (*Response[Services, State], error) {
 	if m.Config.Log {
-		fmt.Printf("Executing step: %s\n", step.Name)
+		fmt.Printf("executing step: %s\n", step.Name)
 	}
 
 	for _, plugin := range m.Config.Plugins {
@@ -137,7 +113,7 @@ func (m *Machine[Services, State]) executeStep(step Step[Services, State]) (*Res
 	}
 
 	if step.Execute == nil {
-		return nil, fmt.Errorf("step %s has no Execute function", step.Name)
+		return nil, fmt.Errorf("step %s has no execute function", step.Name)
 	}
 
 	response, err := step.Execute(m.Context)
@@ -156,27 +132,7 @@ func (m *Machine[Services, State]) executeStep(step Step[Services, State]) (*Res
 
 // Compensate runs the compensate functions of the executed steps.
 func (m *Machine[Services, State]) Compensate() (*Response[Services, State], error) {
-	m.Context = m.InitialContext
-	for i := len(m.ExecutedSteps) - 1; i >= 0; i-- {
-		step := m.ExecutedSteps[i]
-		if step.BeforeCompensate != nil {
-			if err := step.BeforeCompensate(m.Context); err != nil {
-				return nil, err
-			}
-		}
-		if step.Compensate == nil {
-			return nil, fmt.Errorf("step %s has no Compensate function", step.Name)
-		}
-		if _, err := step.Compensate(m.Context); err != nil {
-			return nil, err
-		}
-		if step.AfterCompensate != nil {
-			if err := step.AfterCompensate(m.Context); err != nil {
-				return nil, err
-			}
-		}
-	}
-	return nil, nil
+	return m.Strategy.Compensate(m)
 }
 
 // Result is an alias for any.
